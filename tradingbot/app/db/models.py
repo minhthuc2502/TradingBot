@@ -1,4 +1,4 @@
-from sqlalchemy import Boolean, Column, DateTime, Integer, String, Text, func
+from sqlalchemy import Boolean, Column, DateTime, Float, Integer, String, Text, func
 from sqlalchemy.orm import DeclarativeBase
 
 
@@ -30,6 +30,8 @@ class AnalysisResult(Base):
     full_report = Column(Text)                           # Complete agent output
     success = Column(Boolean, default=True)
     error_message = Column(Text, nullable=True)
+    confidence_score = Column(Float, nullable=True)       # 0.0–1.0 ensemble agreement
+    model_agreement = Column(String(200), nullable=True)  # "Both: BUY" or "Pro=X · Flash=Y"
     created_at = Column(DateTime, server_default=func.now())
 
 

@@ -51,8 +51,31 @@ def get_db() -> Generator[Session, None, None]:
 def init_db() -> None:
     """Create all tables and seed initial data."""
     Base.metadata.create_all(bind=engine)
+    migrate_db()
     with get_db() as db:
         _seed_defaults(db)
+
+
+# ---------------------------------------------------------------------------
+# Schema migration
+# ---------------------------------------------------------------------------
+
+
+def migrate_db() -> None:
+    """Add columns introduced after initial schema creation. Safe to re-run."""
+    from sqlalchemy import text
+
+    new_columns = [
+        "ALTER TABLE analysis_results ADD COLUMN confidence_score REAL",
+        "ALTER TABLE analysis_results ADD COLUMN model_agreement TEXT",
+    ]
+    with engine.connect() as conn:
+        for stmt in new_columns:
+            try:
+                conn.execute(text(stmt))
+                conn.commit()
+            except Exception:
+                pass  # column already exists — SQLite raises OperationalError
 
 
 # ---------------------------------------------------------------------------
@@ -101,6 +124,8 @@ def save_analysis(
     full_report: str | None,
     success: bool,
     error_message: str | None,
+    confidence_score: float | None = None,
+    model_agreement: str | None = None,
 ) -> AnalysisResult:
     result = AnalysisResult(
         ticker=ticker.upper(),
@@ -110,6 +135,8 @@ def save_analysis(
         full_report=full_report,
         success=success,
         error_message=error_message,
+        confidence_score=confidence_score,
+        model_agreement=model_agreement,
     )
     db.add(result)
     db.flush()
