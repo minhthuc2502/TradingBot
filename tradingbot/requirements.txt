@@ -1,0 +1,33 @@
+# ── Core framework ───────────────────────────────────────────────────────────
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+python-multipart>=0.0.12       # form-data parsing for Twilio webhooks
+
+# ── Settings & validation ─────────────────────────────────────────────────
+pydantic>=2.7.0
+pydantic-settings>=2.3.0
+
+# ── Database ──────────────────────────────────────────────────────────────
+sqlalchemy>=2.0.36
+
+# ── Scheduler ────────────────────────────────────────────────────────────
+apscheduler>=3.10.4
+
+# ── WhatsApp / Twilio ────────────────────────────────────────────────────
+twilio>=9.3.0
+
+# ── Discord ───────────────────────────────────────────────────────────────
+# discord.py v2 requires Python 3.8+ and the Message Content privileged intent
+discord.py>=2.3.0
+
+# ── TradingAgents (LangGraph multi-agent framework) ───────────────────────
+# Install directly from the official repo.
+# Pin to main; swap for a release tag once stable (e.g. @v0.2.3).
+git+https://github.com/TauricResearch/TradingAgents.git
+
+# ── HTTP client (used internally by some TradingAgents tools) ─────────────
+httpx>=0.27.0
+
+# ── Market data (discovery screener) ─────────────────────────────────────
+yfinance>=0.2.40
+pandas>=2.0.0

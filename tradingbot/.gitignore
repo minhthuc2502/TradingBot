@@ -1,0 +1,14 @@
+.env
+data/*.db
+data/*.sqlite3
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+.venv/
+venv/
+
+TradingAgents
+CLAUDE.md
+.claude
+docs
