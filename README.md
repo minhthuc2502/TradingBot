@@ -43,7 +43,7 @@ pip install -r tradingbot/requirements.txt
 Copy the example env file and fill in your keys:
 
 ```bash
-cp tradingbot/.env.example tradingbot/.env
+cp .env.example tradingbot/.env
 ```
 
 Key variables:
