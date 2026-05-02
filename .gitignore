@@ -7,8 +7,11 @@ __pycache__/
 dist/
 .venv/
 venv/
+.vscode/
 
 TradingAgents
 CLAUDE.md
 .claude
 docs
+data
+nohup.out
