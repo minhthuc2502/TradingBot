@@ -10,7 +10,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from typing import Generator
 
-from sqlalchemy import create_engine, func as sql_func
+from sqlalchemy import create_engine, func as sql_func, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.config import settings
@@ -63,7 +63,7 @@ def init_db() -> None:
 
 def migrate_db() -> None:
     """Add columns introduced after initial schema creation. Safe to re-run."""
-    from sqlalchemy import text
+    from sqlalchemy.exc import OperationalError
 
     new_columns = [
         "ALTER TABLE analysis_results ADD COLUMN confidence_score REAL",
@@ -74,8 +74,8 @@ def migrate_db() -> None:
             try:
                 conn.execute(text(stmt))
                 conn.commit()
-            except Exception:
-                pass  # column already exists — SQLite raises OperationalError
+            except OperationalError:
+                pass  # column already exists
 
 
 # ---------------------------------------------------------------------------
