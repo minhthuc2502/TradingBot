@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import List
+from typing import List, Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -25,6 +25,8 @@ class Settings(BaseSettings):
     llm_provider: str = "openai"
     deep_think_llm: str = "gpt-4o"
     quick_think_llm: str = "gpt-4o-mini"
+    gemini_pro_model: str = "gemini-2.5-pro"
+    gemini_flash_model: str = "gemini-2.0-flash"
     max_debate_rounds: int = 1
     online_tools: bool = True
 
@@ -60,16 +62,12 @@ class Settings(BaseSettings):
     # Max concurrent stock analyses (LLM API quota guard)
     max_concurrent_analyses: int = 2
 
-    # Ensemble models (Gemini)
-    gemini_pro_model: str = "gemini-2.5-pro"
-    gemini_flash_model: str = "gemini-2.0-flash"
-
     # Discovery
-    discovery_enabled: bool = True
-    discovery_universe: str = "sp500"          # sp500 | nasdaq100 | custom
+    discovery_enabled: bool = False
+    discovery_universe: Literal["sp500", "nasdaq100", "custom"] = "sp500"
     discovery_custom_universe: str = ""         # comma-separated tickers if custom
     discovery_max_tickers: int = 10             # max auto-discovered per day
-    discovery_time: str = "23:00"              # UTC HH:MM, 1 hour before analysis
+    discovery_time: str = "23:00"              # UTC HH:MM — runs evening before analysis
 
     @property
     def discovery_custom_universe_list(self) -> List[str]:
