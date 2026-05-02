@@ -69,6 +69,123 @@ def _split_discord(text: str, max_len: int = 1900) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
+# Rich embed card builder
+# ---------------------------------------------------------------------------
+
+_RATING_COLORS: dict[str, int] = {
+    "BUY": 0x00C851,
+    "OVERWEIGHT": 0x00897B,
+    "HOLD": 0xFFBB33,
+    "UNDERWEIGHT": 0xFF6D00,
+    "SELL": 0xFF4444,
+}
+_UNCERTAINTY_COLOR = 0x9E9E9E
+
+_RATING_EMOJIS: dict[str, str] = {
+    "BUY": "🟢",
+    "OVERWEIGHT": "🟩",
+    "HOLD": "🟡",
+    "UNDERWEIGHT": "🟠",
+    "SELL": "🔴",
+}
+
+
+def build_embed_card(plan: "ConsensusPlan") -> discord.Embed:
+    """Build a discord.Embed card from a ConsensusPlan."""
+    rating = plan.final_rating.upper()
+    color = (
+        _UNCERTAINTY_COLOR
+        if plan.confidence_score < 0.4
+        else _RATING_COLORS.get(rating, _UNCERTAINTY_COLOR)
+    )
+    emoji = _RATING_EMOJIS.get(rating, "⚪")
+    confidence_pct = int(plan.confidence_score * 100)
+
+    embed = discord.Embed(
+        title=f"{emoji} {plan.ticker} — {rating}",
+        description=f"Analysis for {plan.trade_date} | **{confidence_pct}%** confidence",
+        color=discord.Color(color),
+    )
+
+    entry = f"${plan.entry_price:.2f}" if plan.entry_price else "—"
+    stop = f"${plan.stop_loss:.2f}" if plan.stop_loss else "—"
+    target = f"${plan.price_target:.2f}" if plan.price_target else "—"
+    embed.add_field(name="Entry", value=entry, inline=True)
+    embed.add_field(name="Stop Loss", value=stop, inline=True)
+    embed.add_field(name="Target", value=target, inline=True)
+
+    if plan.entry_price and plan.stop_loss and plan.price_target and plan.stop_loss != plan.entry_price:
+        risk = abs(plan.entry_price - plan.stop_loss)
+        reward = abs(plan.price_target - plan.entry_price)
+        rr = f"1:{reward / risk:.1f}"
+    else:
+        rr = "—"
+    embed.add_field(name="Time Horizon", value=plan.time_horizon or "—", inline=True)
+    embed.add_field(name="Risk/Reward", value=rr, inline=True)
+    embed.add_field(name="\u200b", value="\u200b", inline=True)
+
+    if plan.executive_summary:
+        embed.add_field(name="Summary", value=plan.executive_summary[:1024], inline=False)
+
+    if plan.key_catalysts:
+        embed.add_field(
+            name="✅ Key Catalysts",
+            value="\n".join(f"• {c}" for c in plan.key_catalysts[:3]),
+            inline=True,
+        )
+    if plan.key_risks:
+        embed.add_field(
+            name="⚠️ Key Risks",
+            value="\n".join(f"• {r}" for r in plan.key_risks[:3]),
+            inline=True,
+        )
+
+    footer_parts = [f"Models: {plan.model_agreement}"]
+    if plan.discovery_signals:
+        footer_parts.append(f"Source: {', '.join(plan.discovery_signals)}")
+    embed.set_footer(text=" | ".join(footer_parts))
+
+    return embed
+
+
+def build_session_summary_embed(
+    plans: "list[ConsensusPlan]",
+    date: str,
+) -> discord.Embed:
+    """Build end-of-session summary embed ranking all tickers by confidence."""
+    _ORDER = ["BUY", "OVERWEIGHT", "HOLD", "UNDERWEIGHT", "SELL"]
+    rating_counts: dict[str, int] = {}
+    for p in plans:
+        key = p.final_rating.upper()
+        rating_counts[key] = rating_counts.get(key, 0) + 1
+
+    count_str = " · ".join(
+        f"{v} {k}"
+        for k, v in sorted(
+            rating_counts.items(),
+            key=lambda x: _ORDER.index(x[0]) if x[0] in _ORDER else 99,
+        )
+    )
+
+    embed = discord.Embed(
+        title="📊 Daily Analysis Complete",
+        description=f"{len(plans)} tickers analyzed | {count_str}",
+        color=discord.Color(0x2196F3),
+    )
+    embed.set_footer(text=f"Date: {date}")
+
+    sorted_plans = sorted(plans, key=lambda p: p.confidence_score, reverse=True)
+    top_lines = [
+        f"{i + 1}. **{p.ticker}** — {p.final_rating} ({int(p.confidence_score * 100)}%)"
+        for i, p in enumerate(sorted_plans[:5])
+    ]
+    if top_lines:
+        embed.add_field(name="Top Conviction", value="\n".join(top_lines), inline=False)
+
+    return embed
+
+
+# ---------------------------------------------------------------------------
 # Authorisation
 # ---------------------------------------------------------------------------
 
@@ -184,6 +301,35 @@ async def send_to_channel(body: str) -> None:
         return
     for chunk in _split_discord(_fmt(body)):
         await channel.send(chunk)
+
+
+async def send_analysis_embed(plan: "ConsensusPlan") -> None:
+    """Send a rich embed card for one ticker to the broadcast channel."""
+    if not _bot or not settings.discord_channel_id:
+        return
+    channel = _bot.get_channel(settings.discord_channel_id)
+    if channel is None:
+        logger.warning("Discord channel %s not found", settings.discord_channel_id)
+        return
+    try:
+        embed = build_embed_card(plan)
+        await channel.send(embed=embed)
+    except Exception as exc:
+        logger.warning("send_analysis_embed failed for %s: %s", plan.ticker, exc)
+
+
+async def send_session_summary(plans: "list[ConsensusPlan]", date: str) -> None:
+    """Send end-of-session ranked summary embed."""
+    if not _bot or not settings.discord_channel_id:
+        return
+    channel = _bot.get_channel(settings.discord_channel_id)
+    if channel is None:
+        return
+    try:
+        embed = build_session_summary_embed(plans, date)
+        await channel.send(embed=embed)
+    except Exception as exc:
+        logger.warning("send_session_summary failed: %s", exc)
 
 
 async def broadcast_discord_analysis_card(
