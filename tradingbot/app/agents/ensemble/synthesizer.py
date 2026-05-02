@@ -69,7 +69,7 @@ async def synthesize(
     confidence = calculate_confidence(pro_rating, flash_rating)
 
     llm = ChatGoogleGenerativeAI(
-        model=settings.gemini_pro_model,
+        model=settings.analysis_model,
         google_api_key=settings.google_api_key,
         temperature=0.1,
     )

@@ -25,8 +25,7 @@ class Settings(BaseSettings):
     llm_provider: str = "openai"
     deep_think_llm: str = "gpt-4o"
     quick_think_llm: str = "gpt-4o-mini"
-    gemini_pro_model: str = "gemini-2.5-pro"
-    gemini_flash_model: str = "gemini-2.0-flash"
+    analysis_model: str = "gemini-2.5-pro"   # single model used for all analysis runs
     max_debate_rounds: int = 1
     online_tools: bool = True
 

@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 def _get_discovery_llm():
     from langchain_google_genai import ChatGoogleGenerativeAI
     return ChatGoogleGenerativeAI(
-        model=settings.gemini_pro_model,
+        model=settings.analysis_model,
         google_api_key=settings.google_api_key,
         temperature=0.1,
     )

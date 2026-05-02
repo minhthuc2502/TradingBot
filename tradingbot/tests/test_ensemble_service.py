@@ -1,74 +1,70 @@
+"""Tests for the single-phase daily scheduler job."""
+
 import pytest
-from unittest.mock import AsyncMock, patch
-from app.agents.ensemble.schemas import ConsensusPlan
-
-
-def _ok_result(decision="BUY", summary="Bull thesis."):
-    return {"decision": decision, "full_report": summary, "short_summary": summary, "success": True, "error": None}
-
-
-def _fail_result(error="timeout"):
-    return {"decision": "ERROR", "full_report": "", "short_summary": "", "success": False, "error": error}
+from unittest.mock import AsyncMock, MagicMock, patch
 
 
 @pytest.mark.asyncio
-async def test_run_ensemble_both_succeed():
-    mock_plan = ConsensusPlan(
-        ticker="NVDA", trade_date="2026-05-02",
-        final_rating="BUY", confidence_score=0.75,
-        model_agreement="Pro=BUY · Flash=OVERWEIGHT — leaning BUY",
-        time_horizon="2-4 weeks", executive_summary="Strong."
-    )
-    with patch("app.agents.ensemble.service.analyze_stock", new_callable=AsyncMock,
-               side_effect=[_ok_result("BUY"), _ok_result("OVERWEIGHT")]), \
-         patch("app.agents.ensemble.service.synthesize", new_callable=AsyncMock, return_value=mock_plan):
-        from app.agents.ensemble.service import run_ensemble
-        plan = await run_ensemble("NVDA", "2026-05-02")
-    assert plan.final_rating == "BUY"
-    assert plan.confidence_score == 0.75
+async def test_daily_job_empty_watchlist_sends_message():
+    """Job sends a notification when watchlist is empty and discovery is off."""
+    with (
+        patch("app.services.scheduler.settings") as mock_settings,
+        patch("app.services.scheduler.get_db", MagicMock()),
+        patch("app.services.scheduler.get_watchlist", return_value=[]),
+        patch("app.services.scheduler.save_analysis"),
+        patch("app.services.scheduler.send_to_channel", new_callable=AsyncMock) as mock_send,
+        patch("app.services.scheduler.broadcast", new_callable=AsyncMock),
+        patch("app.services.scheduler.send_analysis_embed", new_callable=AsyncMock),
+        patch("app.services.scheduler.send_session_summary", new_callable=AsyncMock),
+    ):
+        mock_settings.discovery_enabled = False
+        mock_settings.analysis_model = "gemini-2.5-pro"
+
+        from app.services.scheduler import _daily_job
+        await _daily_job()
+
+    assert mock_send.called
+    msg = mock_send.call_args[0][0].lower()
+    assert "empty" in msg or "nothing" in msg
 
 
 @pytest.mark.asyncio
-async def test_run_ensemble_pro_fails_uses_flash():
-    with patch("app.agents.ensemble.service.analyze_stock", new_callable=AsyncMock,
-               side_effect=[_fail_result(), _ok_result("HOLD")]):
-        from app.agents.ensemble.service import run_ensemble
-        plan = await run_ensemble("AAPL", "2026-05-02")
-    assert plan.final_rating == "HOLD"
-    assert plan.confidence_score == 0.5
-    assert "Flash" in plan.model_agreement
+async def test_daily_job_analyses_watchlist_stocks():
+    """Job calls analyze_stock for each ticker and sends an embed."""
+    mock_stock = MagicMock()
+    mock_stock.ticker = "NVDA"
 
+    mock_result = {
+        "ticker": "NVDA",
+        "date": "2026-05-02",
+        "decision": "BUY",
+        "short_summary": "Strong AI demand.",
+        "full_report": "Full report.",
+        "success": True,
+        "error": None,
+        "rich": {},
+    }
 
-@pytest.mark.asyncio
-async def test_run_ensemble_flash_fails_uses_pro():
-    with patch("app.agents.ensemble.service.analyze_stock", new_callable=AsyncMock,
-               side_effect=[_ok_result("SELL"), _fail_result()]):
-        from app.agents.ensemble.service import run_ensemble
-        plan = await run_ensemble("TSLA", "2026-05-02")
-    assert plan.final_rating == "SELL"
-    assert "Pro" in plan.model_agreement
+    mock_analyze = AsyncMock(return_value=mock_result)
 
+    with (
+        patch("app.services.scheduler.settings") as mock_settings,
+        patch("app.services.scheduler.get_db", MagicMock()),
+        patch("app.services.scheduler.get_watchlist", return_value=[mock_stock]),
+        patch("app.services.scheduler.save_analysis"),
+        patch("app.services.scheduler.analyze_stock", mock_analyze),
+        patch("app.services.scheduler.send_to_channel", new_callable=AsyncMock),
+        patch("app.services.scheduler.broadcast", new_callable=AsyncMock),
+        patch("app.services.scheduler.send_analysis_embed", new_callable=AsyncMock),
+        patch("app.services.scheduler.send_session_summary", new_callable=AsyncMock),
+    ):
+        mock_settings.discovery_enabled = False
+        mock_settings.analysis_model = "gemini-2.5-pro"
 
-@pytest.mark.asyncio
-async def test_run_ensemble_both_fail_raises():
-    with patch("app.agents.ensemble.service.analyze_stock", new_callable=AsyncMock,
-               side_effect=[_fail_result("api down"), _fail_result("timeout")]):
-        from app.agents.ensemble.service import run_ensemble
-        with pytest.raises(RuntimeError, match="Both models failed"):
-            await run_ensemble("MSFT", "2026-05-02")
+        from app.services.scheduler import _daily_job
+        await _daily_job()
 
-
-@pytest.mark.asyncio
-async def test_run_ensemble_passes_discovery_signals():
-    mock_plan = ConsensusPlan(
-        ticker="NVDA", trade_date="2026-05-02",
-        final_rating="BUY", confidence_score=1.0,
-        model_agreement="Both: BUY", time_horizon="2-4 weeks",
-        executive_summary="Test.", discovery_signals=["volume_spike"]
-    )
-    with patch("app.agents.ensemble.service.analyze_stock", new_callable=AsyncMock,
-               side_effect=[_ok_result(), _ok_result()]), \
-         patch("app.agents.ensemble.service.synthesize", new_callable=AsyncMock, return_value=mock_plan):
-        from app.agents.ensemble.service import run_ensemble
-        plan = await run_ensemble("NVDA", "2026-05-02", discovery_signals=["volume_spike"])
-    assert "volume_spike" in plan.discovery_signals
+    mock_analyze.assert_called_once()
+    call_args = mock_analyze.call_args
+    assert call_args[0][0] == "NVDA"
+    assert call_args[1]["model"] == "gemini-2.5-pro"

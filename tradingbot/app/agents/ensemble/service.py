@@ -25,8 +25,8 @@ async def run_ensemble(
     discovery_signals = discovery_signals or []
 
     pro_result, flash_result = await asyncio.gather(
-        analyze_stock(ticker, date, model=settings.gemini_pro_model),
-        analyze_stock(ticker, date, model=settings.gemini_flash_model),
+        analyze_stock(ticker, date, model=settings.analysis_model),
+        analyze_stock(ticker, date, model=settings.analysis_model),
     )
 
     pro_ok = pro_result.get("success", False)

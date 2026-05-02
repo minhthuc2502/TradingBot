@@ -1,8 +1,8 @@
 """Discord bot service.
 
 Runs a discord.py bot inside the same asyncio event loop as FastAPI.
-The bot listens for commands in any channel it can read and broadcasts
-daily analysis results to a configured notification channel.
+The bot listens for messages, routes them to a natural-language chatbot agent,
+and broadcasts daily analysis results to a configured notification channel.
 
 Setup (in the Discord Developer Portal)
 ----------------------------------------
@@ -12,11 +12,6 @@ Setup (in the Discord Developer Portal)
    ``Read Message History``, ``View Channels``.
 4. Copy the bot token into ``DISCORD_BOT_TOKEN`` in your ``.env``.
 5. Copy the notification channel ID into ``DISCORD_CHANNEL_ID``.
-
-Supported commands (prefix-free, same as WhatsApp)
----------------------------------------------------
-  help | list | add TICKER | remove TICKER
-  analyze TICKER [YYYY-MM-DD] | report | schedule HH:MM | next | status
 """
 
 from __future__ import annotations
@@ -24,11 +19,14 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-from datetime import date
+from typing import TYPE_CHECKING
 
 import discord
 
 from app.config import settings
+
+if TYPE_CHECKING:
+    from app.schemas import AnalysisPlan
 
 logger = logging.getLogger(__name__)
 
@@ -38,11 +36,9 @@ logger = logging.getLogger(__name__)
 
 _WA_BOLD_RE = re.compile(r"\*([^*\n]+)\*")
 _WA_ITALIC_RE = re.compile(r"_([^_\n]+)_")
-_BACKTICK_RE = re.compile(r"`([^`\n]+)`")
 
 
 def _fmt(text: str) -> str:
-    """Convert WhatsApp markdown to Discord markdown."""
     text = _WA_BOLD_RE.sub(r"**\1**", text)
     text = _WA_ITALIC_RE.sub(r"*\1*", text)
     return text
@@ -74,36 +70,35 @@ def _split_discord(text: str, max_len: int = 1900) -> list[str]:
 
 _RATING_COLORS: dict[str, int] = {
     "BUY": 0x00C851,
+    "STRONG BUY": 0x00C851,
     "OVERWEIGHT": 0x00897B,
     "HOLD": 0xFFBB33,
     "UNDERWEIGHT": 0xFF6D00,
     "SELL": 0xFF4444,
+    "STRONG SELL": 0xFF4444,
 }
 _UNCERTAINTY_COLOR = 0x9E9E9E
 
 _RATING_EMOJIS: dict[str, str] = {
     "BUY": "🟢",
+    "STRONG BUY": "🟢",
     "OVERWEIGHT": "🟩",
     "HOLD": "🟡",
     "UNDERWEIGHT": "🟠",
     "SELL": "🔴",
+    "STRONG SELL": "🔴",
 }
 
 
-def build_embed_card(plan: "ConsensusPlan") -> discord.Embed:
-    """Build a discord.Embed card from a ConsensusPlan."""
+def build_embed_card(plan: "AnalysisPlan") -> discord.Embed:
+    """Build a discord.Embed card from an AnalysisPlan."""
     rating = plan.final_rating.upper()
-    color = (
-        _UNCERTAINTY_COLOR
-        if plan.confidence_score < 0.4
-        else _RATING_COLORS.get(rating, _UNCERTAINTY_COLOR)
-    )
+    color = _RATING_COLORS.get(rating, _UNCERTAINTY_COLOR)
     emoji = _RATING_EMOJIS.get(rating, "⚪")
-    confidence_pct = int(plan.confidence_score * 100)
 
     embed = discord.Embed(
         title=f"{emoji} {plan.ticker} — {rating}",
-        description=f"Analysis for {plan.trade_date} | **{confidence_pct}%** confidence",
+        description=f"Analysis for {plan.trade_date}",
         color=discord.Color(color),
     )
 
@@ -114,15 +109,8 @@ def build_embed_card(plan: "ConsensusPlan") -> discord.Embed:
     embed.add_field(name="Stop Loss", value=stop, inline=True)
     embed.add_field(name="Target", value=target, inline=True)
 
-    if plan.entry_price and plan.stop_loss and plan.price_target and plan.stop_loss != plan.entry_price:
-        risk = abs(plan.entry_price - plan.stop_loss)
-        reward = abs(plan.price_target - plan.entry_price)
-        rr = f"1:{reward / risk:.1f}"
-    else:
-        rr = "—"
-    embed.add_field(name="Time Horizon", value=plan.time_horizon or "—", inline=True)
-    embed.add_field(name="Risk/Reward", value=rr, inline=True)
-    embed.add_field(name="\u200b", value="\u200b", inline=True)
+    if plan.time_horizon:
+        embed.add_field(name="Time Horizon", value=plan.time_horizon, inline=True)
 
     if plan.executive_summary:
         embed.add_field(name="Summary", value=plan.executive_summary[:1024], inline=False)
@@ -140,20 +128,23 @@ def build_embed_card(plan: "ConsensusPlan") -> discord.Embed:
             inline=True,
         )
 
-    footer_parts = [f"Models: {plan.model_agreement}"]
+    footer_parts = []
+    if plan.model_agreement:
+        footer_parts.append(f"Model: {plan.model_agreement}")
     if plan.discovery_signals:
         footer_parts.append(f"Source: {', '.join(plan.discovery_signals)}")
-    embed.set_footer(text=" | ".join(footer_parts))
+    if footer_parts:
+        embed.set_footer(text=" | ".join(footer_parts))
 
     return embed
 
 
 def build_session_summary_embed(
-    plans: "list[ConsensusPlan]",
+    plans: "list[AnalysisPlan]",
     date: str,
 ) -> discord.Embed:
-    """Build end-of-session summary embed ranking all tickers by confidence."""
-    _ORDER = ["BUY", "OVERWEIGHT", "HOLD", "UNDERWEIGHT", "SELL"]
+    """Build end-of-session summary embed ranking all tickers by rating."""
+    _ORDER = ["STRONG BUY", "BUY", "OVERWEIGHT", "HOLD", "UNDERWEIGHT", "SELL", "STRONG SELL"]
     rating_counts: dict[str, int] = {}
     for p in plans:
         key = p.final_rating.upper()
@@ -174,13 +165,14 @@ def build_session_summary_embed(
     )
     embed.set_footer(text=f"Date: {date}")
 
-    sorted_plans = sorted(plans, key=lambda p: p.confidence_score, reverse=True)
-    top_lines = [
-        f"{i + 1}. **{p.ticker}** — {p.final_rating} ({int(p.confidence_score * 100)}%)"
-        for i, p in enumerate(sorted_plans[:5])
-    ]
-    if top_lines:
-        embed.add_field(name="Top Conviction", value="\n".join(top_lines), inline=False)
+    buy_ratings = {"BUY", "STRONG BUY", "OVERWEIGHT"}
+    top_buys = [p for p in plans if p.final_rating.upper() in buy_ratings]
+    if top_buys:
+        top_lines = [
+            f"{i + 1}. **{p.ticker}** — {p.final_rating}"
+            for i, p in enumerate(top_buys[:5])
+        ]
+        embed.add_field(name="Top Buys", value="\n".join(top_lines), inline=False)
 
     return embed
 
@@ -193,7 +185,7 @@ def build_session_summary_embed(
 def _is_authorised(user_id: int) -> bool:
     allowed = settings.discord_authorized_user_id_list
     if not allowed:
-        return True  # open when not configured
+        return True
     return str(user_id) in allowed
 
 
@@ -208,11 +200,9 @@ class _TradingBotDiscord(discord.Client):
         logger.info("Discord bot online: %s (id=%s)", self.user, self.user.id)
 
     async def on_message(self, message: discord.Message) -> None:
-        # Ignore own messages
         if message.author == self.user:
             return
 
-        # Authorisation check
         if not _is_authorised(message.author.id):
             return
 
@@ -220,67 +210,30 @@ class _TradingBotDiscord(discord.Client):
         if not body:
             return
 
-        lower = body.lower()
-
-        # analyze command → run in background, push result back to same channel
-        m = re.match(r"^analyze\s+(\S+)(?:\s+(\d{4}-\d{2}-\d{2}))?$", body, re.IGNORECASE)
-        if m:
-            ticker = m.group(1).upper()
-            analysis_date = m.group(2) or date.today().strftime("%Y-%m-%d")
-            await message.channel.send(
-                _fmt(f"🔍 Analysing *{ticker}* for {analysis_date}…\nResults coming shortly.")
-            )
-            asyncio.create_task(
-                _bg_discord_analyze(message.channel, ticker, analysis_date)
-            )
-            return
-
-        # All other commands → delegate to the shared command handler
-        from app.handlers.command_handler import handle_message  # lazy to avoid circular
-        reply = await handle_message(str(message.author.id), body, skip_auth=True)
-        for chunk in _split_discord(_fmt(reply)):
-            await message.channel.send(chunk)
+        # Route all messages through the natural-language chatbot agent
+        asyncio.create_task(_handle_chatbot_message(message.channel, body))
 
 
 # ---------------------------------------------------------------------------
-# Background analysis task (Discord path)
+# Chatbot message handler
 # ---------------------------------------------------------------------------
 
 
-async def _bg_discord_analyze(
+async def _handle_chatbot_message(
     channel: discord.TextChannel,
-    ticker: str,
-    analysis_date: str,
+    message: str,
 ) -> None:
-    """Run analysis and push results back to the Discord channel."""
-    from app.db.session import get_db, save_analysis
-    from app.services.trading_agent import analyze_stock
-    from app.services.whatsapp import format_analysis_messages  # reuse formatter
+    """Run the chatbot agent and post the reply back to the channel."""
+    from app.agents.chatbot.agent import chat
 
-    result = await analyze_stock(ticker, analysis_date)
-
-    with get_db() as db:
-        save_analysis(
-            db,
-            ticker=result["ticker"],
-            analysis_date=result["date"],
-            decision=result["decision"],
-            short_summary=result["short_summary"],
-            full_report=result["full_report"],
-            success=result["success"],
-            error_message=result.get("error"),
-        )
-
-    msgs = await format_analysis_messages(
-        result["ticker"],
-        result["date"],
-        result["decision"],
-        result["short_summary"],
-        rich=result.get("rich"),
-    )
-    for msg in msgs:
-        for chunk in _split_discord(_fmt(msg)):
+    try:
+        async with channel.typing():
+            reply = await chat(message)
+        for chunk in _split_discord(reply):
             await channel.send(chunk)
+    except Exception as exc:
+        logger.exception("Chatbot handler error: %s", exc)
+        await channel.send(f"❌ Sorry, something went wrong: {str(exc)[:200]}")
 
 
 # ---------------------------------------------------------------------------
@@ -297,13 +250,13 @@ async def send_to_channel(body: str) -> None:
         return
     channel = _bot.get_channel(settings.discord_channel_id)
     if channel is None:
-        logger.warning("Discord channel %s not found – is the bot in that server?", settings.discord_channel_id)
+        logger.warning("Discord channel %s not found", settings.discord_channel_id)
         return
     for chunk in _split_discord(_fmt(body)):
         await channel.send(chunk)
 
 
-async def send_analysis_embed(plan: "ConsensusPlan") -> None:
+async def send_analysis_embed(plan: "AnalysisPlan") -> None:
     """Send a rich embed card for one ticker to the broadcast channel."""
     if not _bot or not settings.discord_channel_id:
         return
@@ -318,7 +271,7 @@ async def send_analysis_embed(plan: "ConsensusPlan") -> None:
         logger.warning("send_analysis_embed failed for %s: %s", plan.ticker, exc)
 
 
-async def send_session_summary(plans: "list[ConsensusPlan]", date: str) -> None:
+async def send_session_summary(plans: "list[AnalysisPlan]", date: str) -> None:
     """Send end-of-session ranked summary embed."""
     if not _bot or not settings.discord_channel_id:
         return
@@ -330,23 +283,6 @@ async def send_session_summary(plans: "list[ConsensusPlan]", date: str) -> None:
         await channel.send(embed=embed)
     except Exception as exc:
         logger.warning("send_session_summary failed: %s", exc)
-
-
-async def broadcast_discord_analysis_card(
-    ticker: str,
-    analysis_date: str,
-    decision: str,
-    short_summary: str,
-    rich: dict | None = None,
-) -> None:
-    """Broadcast a full analysis card to the Discord notification channel."""
-    if not _bot or not settings.discord_channel_id:
-        return
-    from app.services.whatsapp import format_analysis_messages  # reuse formatter
-
-    msgs = await format_analysis_messages(ticker, analysis_date, decision, short_summary, rich)
-    for msg in msgs:
-        await send_to_channel(msg)
 
 
 # ---------------------------------------------------------------------------
@@ -365,7 +301,7 @@ async def start_discord_bot() -> None:
         return
 
     intents = discord.Intents.default()
-    intents.message_content = True  # privileged intent – enable in Developer Portal
+    intents.message_content = True
 
     _bot = _TradingBotDiscord(intents=intents)
     _bot_task = asyncio.create_task(_bot.start(settings.discord_bot_token))

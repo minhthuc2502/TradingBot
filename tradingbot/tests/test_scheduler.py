@@ -22,12 +22,3 @@ def test_parse_hhmm_invalid_raises():
 def test_parse_hhmm_missing_colon_raises():
     with pytest.raises(ValueError):
         _parse_hhmm("1200")
-
-
-async def test_daily_discovery_job_no_op_when_disabled():
-    from unittest.mock import patch
-    from app.config import Settings
-    with patch("app.services.scheduler.settings", Settings(discovery_enabled=False)):
-        from app.services.scheduler import _daily_discovery_job
-        result = await _daily_discovery_job()
-    assert result == []

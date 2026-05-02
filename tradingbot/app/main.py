@@ -10,6 +10,8 @@ import logging
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
+import os
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -39,6 +41,7 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger.info("Starting %s …", settings.app_name)
 
+    os.makedirs("data", exist_ok=True)
     init_db()
     logger.info("Database ready")
 
