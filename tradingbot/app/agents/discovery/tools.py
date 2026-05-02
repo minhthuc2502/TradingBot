@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import io
 import logging
 from typing import List, Optional
 
 import pandas as pd
+import requests
 import yfinance as yf
 
 from app.config import settings
@@ -12,8 +14,16 @@ logger = logging.getLogger(__name__)
 
 _SP500_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
 _NASDAQ100_URL = "https://en.wikipedia.org/wiki/Nasdaq-100"
+_HEADERS = {"User-Agent": "Mozilla/5.0 (TradingBot/1.0; research use)"}
 
 _universe_cache: dict[str, List[str]] = {}
+
+
+def _read_html_wiki(url: str) -> list:
+    """Fetch Wikipedia page with a browser User-Agent and parse tables."""
+    resp = requests.get(url, headers=_HEADERS, timeout=15)
+    resp.raise_for_status()
+    return pd.read_html(io.StringIO(resp.text))
 
 
 def load_universe() -> List[str]:
@@ -27,14 +37,14 @@ def load_universe() -> List[str]:
         result = settings.discovery_custom_universe_list or []
     elif universe_type == "nasdaq100":
         try:
-            tables = pd.read_html(_NASDAQ100_URL)
+            tables = _read_html_wiki(_NASDAQ100_URL)
             result = tables[3]["Ticker"].tolist()
         except Exception as exc:
             logger.warning("Failed to load NASDAQ100 universe: %s", exc)
             result = []
     else:  # default: sp500
         try:
-            tables = pd.read_html(_SP500_URL)
+            tables = _read_html_wiki(_SP500_URL)
             result = tables[0]["Symbol"].str.replace(".", "-", regex=False).tolist()
         except Exception as exc:
             logger.warning("Failed to load S&P500 universe: %s", exc)

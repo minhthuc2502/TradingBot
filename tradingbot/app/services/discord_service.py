@@ -211,7 +211,9 @@ class _TradingBotDiscord(discord.Client):
             return
 
         # Route all messages through the natural-language chatbot agent
-        asyncio.create_task(_handle_chatbot_message(message.channel, body))
+        asyncio.create_task(
+            _handle_chatbot_message(message.channel, body, str(message.author.id))
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -222,13 +224,14 @@ class _TradingBotDiscord(discord.Client):
 async def _handle_chatbot_message(
     channel: discord.TextChannel,
     message: str,
+    user_id: str,
 ) -> None:
     """Run the chatbot agent and post the reply back to the channel."""
     from app.agents.chatbot.agent import chat
 
     try:
         async with channel.typing():
-            reply = await chat(message)
+            reply = await chat(message, user_id=user_id)
         for chunk in _split_discord(reply):
             await channel.send(chunk)
     except Exception as exc:

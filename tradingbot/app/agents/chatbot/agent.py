@@ -1,13 +1,15 @@
 """Natural language chatbot agent for Discord.
 
-Uses LangGraph's ReAct agent with a set of trading tools to answer
-free-form questions about stocks, trending markets, and watchlist management.
+Uses LangGraph's ReAct agent with MemorySaver checkpointer so each user
+gets persistent multi-turn conversation history (keyed by Discord user ID).
+Send "reset" or "new chat" to start a fresh session.
 """
 
 from __future__ import annotations
 
 import logging
 import os
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -30,15 +32,22 @@ Guidelines:
 - If asked about technical signals, use get_technical_analysis_tool
 - For news, use get_stock_news_tool
 - Keep responses under 800 words unless detailed analysis is explicitly requested
+- Remember previous messages in this conversation and build on them
 """
 
+# Reset phrases that start a fresh session
+_RESET_PHRASES = {"reset", "new chat", "new session", "clear", "start over", "/reset", "/new"}
+
 _agent = None
-_agent_lock: "asyncio.Lock | None" = None
+_checkpointer = None
+
+# Per-user session counters — incrementing starts a new thread_id
+_session_counters: dict[str, int] = {}
 
 
 def _get_agent():
-    """Lazy-initialize and cache the ReAct agent."""
-    global _agent
+    """Lazy-initialize and cache the ReAct agent with memory checkpointer."""
+    global _agent, _checkpointer
     if _agent is not None:
         return _agent
 
@@ -54,13 +63,12 @@ def _get_agent():
     )
     from app.config import settings
 
-    # Ensure API keys are in os.environ for LangChain clients
     if settings.google_api_key:
         os.environ.setdefault("GOOGLE_API_KEY", settings.google_api_key)
         os.environ.setdefault("GEMINI_API_KEY", settings.google_api_key)
 
-    from langchain_core.messages import HumanMessage
     from langchain_google_genai import ChatGoogleGenerativeAI
+    from langgraph.checkpoint.memory import MemorySaver
     from langgraph.prebuilt import create_react_agent
 
     tools = [
@@ -80,37 +88,79 @@ def _get_agent():
         temperature=0.1,
     )
 
+    _checkpointer = MemorySaver()
     _agent = create_react_agent(
         model=llm,
         tools=tools,
         prompt=_SYSTEM_PROMPT,
+        checkpointer=_checkpointer,
     )
-    logger.info("Chatbot agent initialised with model %s", settings.analysis_model)
+    logger.info("Chatbot agent initialised with model %s (memory enabled)", settings.analysis_model)
     return _agent
 
 
-async def chat(message: str) -> str:
-    """Process a natural-language message and return a response string."""
+def _thread_id(user_id: str) -> str:
+    """Return the current thread ID for a user."""
+    counter = _session_counters.get(user_id, 0)
+    return f"{user_id}:{counter}"
+
+
+def reset_session(user_id: str) -> None:
+    """Start a fresh conversation for this user by bumping their session counter."""
+    _session_counters[user_id] = _session_counters.get(user_id, 0) + 1
+    logger.info("Session reset for user %s → thread %s", user_id, _thread_id(user_id))
+
+
+def _extract_text(content) -> str:
+    """Extract plain text from a message content that may be a string or a list of blocks."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text":
+                parts.append(block.get("text", ""))
+            elif isinstance(block, str):
+                parts.append(block)
+        return "".join(parts)
+    return str(content) if content else ""
+
+
+async def chat(message: str, user_id: Optional[str] = None) -> str:
+    """
+    Process a natural-language message and return a response.
+
+    If user_id is provided, conversation history is maintained across calls
+    (multi-turn). Send a reset phrase to start a new session.
+    """
     import asyncio
 
     from langchain_core.messages import HumanMessage
 
-    global _agent_lock
-    if _agent_lock is None:
-        _agent_lock = asyncio.Lock()
+    # Check for reset intent before doing anything
+    if user_id and message.strip().lower() in _RESET_PHRASES:
+        reset_session(user_id)
+        return "🔄 Session reset. Starting a fresh conversation — what would you like to know?"
 
     try:
-        async with _agent_lock:
-            agent = _get_agent()
+        agent = _get_agent()
 
-        result = await agent.ainvoke({"messages": [HumanMessage(content=message)]})
+        config = (
+            {"configurable": {"thread_id": _thread_id(user_id)}}
+            if user_id
+            else {}
+        )
+
+        result = await agent.ainvoke(
+            {"messages": [HumanMessage(content=message)]},
+            config=config,
+        )
 
         messages = result.get("messages", [])
         if messages:
             last = messages[-1]
             content = getattr(last, "content", "")
-            if content:
-                return str(content)
+            return _extract_text(content) or "I couldn't generate a response. Please try again."
 
         return "I couldn't generate a response. Please try again."
 
