@@ -11,6 +11,7 @@ your LLM API quota.
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 import re
 from concurrent.futures import ThreadPoolExecutor
@@ -43,23 +44,26 @@ def _get_semaphore() -> asyncio.Semaphore:
 # ---------------------------------------------------------------------------
 
 
-def _build_ta_config() -> dict[str, Any]:
-    """Build TradingAgents config dict from our settings."""
-    from tradingagents.default_config import DEFAULT_CONFIG  # lazy import
+def _build_ta_config(model: str | None = None) -> dict[str, Any]:
+    """Build TradingAgents config dict. If model is a Gemini model name, override provider."""
+    from tradingagents.default_config import DEFAULT_CONFIG
 
     config = DEFAULT_CONFIG.copy()
-    config["llm_provider"] = settings.llm_provider
-    config["deep_think_llm"] = settings.deep_think_llm
-    config["quick_think_llm"] = settings.quick_think_llm
     config["max_debate_rounds"] = settings.max_debate_rounds
     config["online_tools"] = settings.online_tools
 
-    # DEFAULT_CONFIG ships with backend_url="https://api.openai.com/v1".
-    # For non-OpenAI providers (Google, Anthropic, …) this must be cleared so
-    # their SDK uses its own native endpoint instead of being misdirected to
-    # the OpenAI API, which returns 404 for every non-OpenAI model.
-    if settings.llm_provider.lower() != "openai":
+    if model and "gemini" in model.lower():
+        config["llm_provider"] = "google"
+        config["deep_think_llm"] = model
+        config["quick_think_llm"] = model
         config["backend_url"] = None
+    else:
+        config["llm_provider"] = settings.llm_provider
+        config["deep_think_llm"] = settings.deep_think_llm
+        config["quick_think_llm"] = settings.quick_think_llm
+        if settings.llm_provider.lower() != "openai":
+            config["backend_url"] = None
+
     return config
 
 
@@ -85,7 +89,7 @@ def _inject_api_keys() -> None:
             os.environ[env_var] = value
 
 
-def _run_analysis_sync(ticker: str, analysis_date: str) -> dict:
+def _run_analysis_sync(ticker: str, analysis_date: str, model: str | None = None) -> dict:
     """
     Execute TradingAgents propagate() synchronously.
 
@@ -94,7 +98,7 @@ def _run_analysis_sync(ticker: str, analysis_date: str) -> dict:
     from tradingagents.graph.trading_graph import TradingAgentsGraph  # lazy import
 
     _inject_api_keys()
-    config = _build_ta_config()
+    config = _build_ta_config(model)
     ta = TradingAgentsGraph(debug=False, config=config)
     final_state, decision = ta.propagate(ticker, analysis_date)
 
@@ -159,7 +163,7 @@ def _extract_short_summary(text: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-async def analyze_stock(ticker: str, analysis_date: str | None = None) -> dict:
+async def analyze_stock(ticker: str, analysis_date: str | None = None, model: str | None = None) -> dict:
     """
     Run a full TradingAgents analysis for *ticker* on *analysis_date*.
 
@@ -174,7 +178,8 @@ async def analyze_stock(ticker: str, analysis_date: str | None = None) -> dict:
         try:
             logger.info("Analysis started: %s @ %s", ticker, analysis_date)
             rich = await loop.run_in_executor(
-                _executor, _run_analysis_sync, ticker, analysis_date
+                _executor,
+                functools.partial(_run_analysis_sync, ticker, analysis_date, model),
             )
             decision_label = rich["decision_label"]
             logger.info("Analysis complete: %s → %s", ticker, decision_label)
