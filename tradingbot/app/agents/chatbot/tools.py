@@ -21,6 +21,7 @@ async def analyze_stock_tool(ticker: str, analysis_date: Optional[str] = None) -
         ticker: Stock ticker symbol (e.g. NVDA, AAPL, AMZN)
         analysis_date: Optional date in YYYY-MM-DD format; defaults to today
     """
+    from app.agents.discovery.tools import get_technical_snapshot
     from app.config import settings
     from app.services.trading_agent import analyze_stock
 
@@ -35,10 +36,24 @@ async def analyze_stock_tool(ticker: str, analysis_date: Optional[str] = None) -
 
     rich = result.get("rich", {})
     portfolio_decision = rich.get("final_trade_decision", result["full_report"])
+    loop = asyncio.get_event_loop()
+    snapshot = await loop.run_in_executor(
+        None, functools.partial(get_technical_snapshot, ticker)
+    )
+
+    market_context = ""
+    if snapshot:
+        market_context = (
+            f"Live market context: current price ${snapshot['current_price']:.2f}, "
+            f"SMA20 ${snapshot['sma20']:.2f}, 20-day support ${snapshot['support_20d']:.2f}, "
+            f"20-day resistance ${snapshot['resistance_20d']:.2f}. "
+            f"For entry-point or price-level questions, use the live technical levels rather than any stale plan values in the narrative.\n\n"
+        )
 
     return (
         f"**{ticker} Analysis ({analysis_date})**\n"
         f"Decision: **{result['decision']}**\n\n"
+        f"{market_context}"
         f"{portfolio_decision[:2000]}"
     )
 
@@ -133,46 +148,64 @@ async def get_technical_analysis_tool(ticker: str) -> str:
     Args:
         ticker: Stock ticker symbol
     """
-    import asyncio
-
-    from app.agents.discovery.tools import detect_breakout
+    from app.agents.discovery.tools import detect_breakout, get_technical_snapshot
 
     ticker = ticker.upper().strip()
     try:
         loop = asyncio.get_event_loop()
+        snapshot = await loop.run_in_executor(
+            None, functools.partial(get_technical_snapshot, ticker)
+        )
+        if not snapshot:
+            return f"No data available for {ticker}."
+
         signal = await loop.run_in_executor(
             None, functools.partial(detect_breakout, ticker)
         )
 
-        if signal:
-            signals_str = ", ".join(signal.get("signals", []))
-            return (
-                f"**Technical Analysis for {ticker}:**\n"
-                f"Signal: {signal.get('signal', 'N/A')}\n"
-                f"RSI: {signal.get('rsi', 'N/A')}\n"
-                f"Detected patterns: {signals_str or 'none'}"
+        current_price = snapshot["current_price"]
+        sma20 = snapshot["sma20"]
+        sma50 = snapshot.get("sma50")
+        rsi14 = snapshot.get("rsi14")
+        support_20d = snapshot["support_20d"]
+        resistance_20d = snapshot["resistance_20d"]
+        pct_from_sma20 = snapshot["pct_from_sma20"]
+        entry_zone_low = snapshot["entry_zone_low"]
+        entry_zone_high = snapshot["entry_zone_high"]
+        atr14 = snapshot.get("atr14")
+        signals = signal.get("signals", []) if signal else []
+        signals_str = ", ".join(signals) if signals else "none"
+
+        if pct_from_sma20 >= 2.0:
+            entry_plan = (
+                f"Wait for a pullback toward SMA20 at ${sma20:.2f}. "
+                f"Best watch zone: ${entry_zone_low:.2f}-${entry_zone_high:.2f}."
+            )
+        elif pct_from_sma20 >= -1.0:
+            entry_plan = (
+                f"Price is already near the SMA20 watch area. "
+                f"Watch for support to hold in ${entry_zone_low:.2f}-${entry_zone_high:.2f} before entering."
             )
         else:
-            # Still get basic price info
-            import yfinance as yf
-            import pandas as pd
+            entry_plan = (
+                f"Price is trading below SMA20, so wait for reclaim or stabilization near "
+                f"${entry_zone_low:.2f}-${entry_zone_high:.2f} before entering."
+            )
 
-            data = await loop.run_in_executor(
-                None, functools.partial(yf.download, ticker, period="5d", progress=False)
-            )
-            if data.empty:
-                return f"No data available for {ticker}."
-            close = data["Close"]
-            if hasattr(close, "squeeze"):
-                close = close.squeeze()
-            current = float(close.iloc[-1])
-            prev = float(close.iloc[-2]) if len(close) > 1 else current
-            pct = (current - prev) / prev * 100
-            return (
-                f"**Technical Analysis for {ticker}:**\n"
-                f"Current price: ${current:.2f} ({pct:+.2f}% today)\n"
-                f"No strong breakout signals detected — stock in normal trading range."
-            )
+        lines = [
+            f"**Technical Analysis for {ticker}:**",
+            f"Current price: ${current_price:.2f} ({snapshot['day_change_pct']:+.2f}% today)",
+            f"SMA20: ${sma20:.2f} | SMA50: {f'${sma50:.2f}' if sma50 is not None else 'N/A'}",
+            f"RSI14: {rsi14 if rsi14 is not None else 'N/A'} | ATR14: {f'${atr14:.2f}' if atr14 is not None else 'N/A'}",
+            f"20-day support/resistance: ${support_20d:.2f} / ${resistance_20d:.2f}",
+            f"Distance from SMA20: {pct_from_sma20:+.2f}%",
+            f"Potential entry watch price: ${sma20:.2f}",
+            f"Entry zone: ${entry_zone_low:.2f}-${entry_zone_high:.2f}",
+            f"Breakout trigger: close above ${resistance_20d:.2f}",
+            f"Signals: {signals_str}",
+            f"Entry view: {entry_plan}",
+        ]
+        return "\n".join(lines)
     except Exception as exc:
         return f"Could not get technical analysis for {ticker}: {exc}"
 

@@ -110,38 +110,110 @@ def get_news_active_tickers(
     return sorted(results, key=lambda x: x["news_count"], reverse=True)[:30]
 
 
-def detect_breakout(ticker: str, date: str | None = None) -> Optional[dict]:
-    """Return breakout signal dict if ticker meets technical criteria, else None."""
+def get_technical_snapshot(ticker: str, period: str = "6mo") -> Optional[dict]:
+    """Return current price and indicator levels for entry/exit decisions."""
     try:
-        data = yf.download(ticker, period="60d", progress=False, auto_adjust=True)
+        data = yf.download(ticker, period=period, progress=False, auto_adjust=True)
+        if data.empty:
+            return None
+
         close = data["Close"]
+        high = data["High"]
+        low = data["Low"]
+
         if hasattr(close, "squeeze"):
             close = close.squeeze()
+        if hasattr(high, "squeeze"):
+            high = high.squeeze()
+        if hasattr(low, "squeeze"):
+            low = low.squeeze()
+
         if len(close) < 20:
             return None
 
         sma20 = close.rolling(20).mean()
-        current_close = float(close.iloc[-1])
-        current_sma20 = float(sma20.iloc[-1])
+        sma50 = close.rolling(50).mean() if len(close) >= 50 else None
 
         delta = close.diff()
         gain = delta.clip(lower=0).rolling(14).mean()
         loss = (-delta.clip(upper=0)).rolling(14).mean()
-        rs = gain / loss
-        rsi = float((100 - (100 / (1 + rs))).iloc[-1])
+        rs = gain / loss.replace(0, pd.NA)
+        rsi_series = 100 - (100 / (1 + rs))
 
-        signals = []
-        if current_close > current_sma20 * 1.015:
-            signals.append("above_sma20")
-        if rsi < 35:
-            signals.append("oversold_bounce")
-        elif rsi > 65:
-            signals.append("momentum_strong")
+        tr_components = pd.concat(
+            [
+                high - low,
+                (high - close.shift(1)).abs(),
+                (low - close.shift(1)).abs(),
+            ],
+            axis=1,
+        )
+        atr14 = tr_components.max(axis=1).rolling(14).mean()
 
-        if not signals:
-            return None
+        current_close = float(close.iloc[-1])
+        prev_close = float(close.iloc[-2]) if len(close) > 1 else current_close
+        current_sma20 = float(sma20.iloc[-1])
+        current_sma50 = float(sma50.iloc[-1]) if sma50 is not None and not pd.isna(sma50.iloc[-1]) else None
+        rsi14 = float(rsi_series.iloc[-1]) if not pd.isna(rsi_series.iloc[-1]) else None
+        atr_value = float(atr14.iloc[-1]) if not pd.isna(atr14.iloc[-1]) else None
 
-        return {"ticker": ticker, "signals": signals, "rsi": round(rsi, 1), "signal": "technical_setup"}
+        support_20d = float(low.tail(20).min())
+        resistance_20d = float(high.tail(20).max())
+        pct_from_sma20 = ((current_close / current_sma20) - 1) * 100
+        day_change_pct = ((current_close - prev_close) / prev_close) * 100 if prev_close else 0.0
+
+        return {
+            "ticker": ticker,
+            "current_price": round(current_close, 2),
+            "previous_close": round(prev_close, 2),
+            "day_change_pct": round(day_change_pct, 2),
+            "sma20": round(current_sma20, 2),
+            "sma50": round(current_sma50, 2) if current_sma50 is not None else None,
+            "rsi14": round(rsi14, 1) if rsi14 is not None else None,
+            "atr14": round(atr_value, 2) if atr_value is not None else None,
+            "support_20d": round(support_20d, 2),
+            "resistance_20d": round(resistance_20d, 2),
+            "pct_from_sma20": round(pct_from_sma20, 2),
+            "entry_watch_price": round(current_sma20, 2),
+            "entry_zone_low": round(current_sma20 * 0.995, 2),
+            "entry_zone_high": round(current_sma20 * 1.005, 2),
+        }
     except Exception as exc:
-        logger.debug("detect_breakout(%s) failed: %s", ticker, exc)
+        logger.debug("get_technical_snapshot(%s) failed: %s", ticker, exc)
         return None
+
+
+def detect_breakout(ticker: str, date: str | None = None) -> Optional[dict]:
+    """Return breakout signal dict if ticker meets technical criteria, else None."""
+    snapshot = get_technical_snapshot(ticker, period="6mo")
+    if not snapshot:
+        return None
+
+    current_close = snapshot["current_price"]
+    current_sma20 = snapshot["sma20"]
+    rsi = snapshot["rsi14"]
+
+    signals = []
+    if current_close > current_sma20 * 1.015:
+        signals.append("above_sma20")
+    if rsi is not None and rsi < 35:
+        signals.append("oversold_bounce")
+    elif rsi is not None and rsi > 65:
+        signals.append("momentum_strong")
+
+    if not signals:
+        return None
+
+    return {
+        "ticker": ticker,
+        "signals": signals,
+        "rsi": rsi,
+        "signal": "technical_setup",
+        "current_price": current_close,
+        "sma20": current_sma20,
+        "entry_watch_price": snapshot["entry_watch_price"],
+        "entry_zone_low": snapshot["entry_zone_low"],
+        "entry_zone_high": snapshot["entry_zone_high"],
+        "support_20d": snapshot["support_20d"],
+        "resistance_20d": snapshot["resistance_20d"],
+    }

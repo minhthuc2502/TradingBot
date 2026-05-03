@@ -49,6 +49,43 @@ def test_detect_breakout_returns_none_on_insufficient_data():
     assert result is None
 
 
+def test_get_technical_snapshot_returns_entry_levels():
+    close = pd.Series([float(100 + i) for i in range(60)])
+    high = close + 1.5
+    low = close - 1.5
+    mock_data = pd.DataFrame({"Close": close, "High": high, "Low": low})
+
+    with patch("app.agents.discovery.tools.yf.download", return_value=mock_data):
+        from app.agents.discovery.tools import get_technical_snapshot
+
+        result = get_technical_snapshot("AAPL")
+
+    assert result is not None
+    assert result["current_price"] == 159.0
+    assert result["sma20"] == 149.5
+    assert result["entry_watch_price"] == result["sma20"]
+    assert result["entry_zone_low"] < result["entry_watch_price"] < result["entry_zone_high"]
+    assert result["support_20d"] == 138.5
+    assert result["resistance_20d"] == 160.5
+
+
+def test_detect_breakout_includes_entry_zone_levels():
+    close = pd.Series([100.0] * 40 + [102.0] * 10 + [106.0] * 10)
+    high = close + 1.0
+    low = close - 1.0
+    mock_data = pd.DataFrame({"Close": close, "High": high, "Low": low})
+
+    with patch("app.agents.discovery.tools.yf.download", return_value=mock_data):
+        from app.agents.discovery.tools import detect_breakout
+
+        result = detect_breakout("NVDA")
+
+    assert result is not None
+    assert "above_sma20" in result["signals"]
+    assert result["entry_zone_low"] < result["entry_watch_price"] < result["entry_zone_high"]
+    assert result["current_price"] == 106.0
+
+
 def test_load_universe_custom():
     from app.config import Settings
     with patch("app.agents.discovery.tools.settings", Settings(
